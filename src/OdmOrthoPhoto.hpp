@@ -117,6 +117,7 @@ private:
 
     void saveTIFF(const std::string &filename, GDALDataType dataType);
     
+    void saveDepthTIFF(const std::string &filename);
     /*!
       * \brief Renders a triangle into the ortho photo.
       *
@@ -161,6 +162,7 @@ private:
     std::vector<std::string> inputFiles;
     std::string     outputFile_;        /**< Path to the destination file. */
     std::string     outputCornerFile_;  /**< Path to the output corner file. */
+    std::string     outputDsmFile_;     /**< Path to the output dsm file. */
     std::string     logFile_;           /**< Path to the log file. */
     std::string     bandsOrder;
     float inpaintThreshold;

@@ -12,6 +12,7 @@ OdmOrthoPhoto::OdmOrthoPhoto()
     outputFile_ = "ortho.tif";
     logFile_    = "log.txt";
     outputCornerFile_ = "";
+    outputDsmFile_ = "";
     bandsOrder = "red,green,blue";
     outputDepthIdx = -1;
     resolution_ = 0.0f;
@@ -118,6 +119,10 @@ void OdmOrthoPhoto::parseArguments(int argc, char *argv[])
             if (++argIndex >= argc) throw OdmOrthoPhotoException("Argument '" + argument + "' expects 1 more input following it, but no more inputs were provided.");
             outputFile_ = std::string(argv[argIndex]);
             log_ << "Writing output to: " << outputFile_ << "\n";
+        }else if(argument == "-outputDsmFile"){
+            if (++argIndex >= argc) throw OdmOrthoPhotoException("Argument '" + argument + "' expects 1 more input following it, but no more inputs were provided.");
+            outputDsmFile_ = std::string(argv[argIndex]);
+            log_ << "Writing output DSM to: " << outputFile_ << "\n";                
         }else if(argument == "-outputCornerFile"){
             if (++argIndex >= argc) throw OdmOrthoPhotoException("Argument '" + argument + "' expects 1 more input following it, but no more inputs were provided.");
             outputCornerFile_ = std::string(argv[argIndex]);
@@ -321,6 +326,72 @@ void OdmOrthoPhoto::saveTIFF(const std::string &filename, GDALDataType dataType)
     if (GDALRasterIO( hBand, GF_Write, 0, 0, width, height,
                 alphaBand, width, height, dataType, 0, 0 ) != CE_None){
         std::cerr << "Cannot write TIFF (alpha) to " << filename << std::endl;
+        exit(1);
+    }
+
+    GDALClose( hDstDS );
+}
+
+
+void OdmOrthoPhoto::saveDepthTIFF(const std::string &filename) {
+    if (filename.empty()) {
+        return;
+    }
+    GDALAllRegister();
+    GDALDriverH hDriver = GDALGetDriverByName( "GTiff" );
+    if (!hDriver){
+        std::cerr << "Cannot initialize GeoTIFF driver. Check your GDAL installation." << std::endl;
+        exit(1);
+    }
+
+    for (auto &opt : gdalConfigs){
+        if (opt.first == "GDAL_CACHEMAX"){
+            GIntBig nBytes;
+            std::istringstream ss(opt.second);
+            ss >> nBytes;
+            GDALSetCacheMax64(nBytes);
+            log_ << "Set GDAL_CACHEMAX to " << nBytes << "\n";
+        }
+    }
+
+    char **papszOptions = NULL;
+    for (auto &opt : coOptions){
+        papszOptions = CSLSetNameValue(papszOptions, opt.first.c_str(), opt.second.c_str());
+        log_ << "Set " << opt.first << "=" << opt.second << "\n";
+    }
+
+    GDALDatasetH hDstDS = GDALCreate( hDriver, filename.c_str(), width, height,
+                                      1, GDT_Float32, papszOptions );
+    
+    if (!aSrs.empty()){
+        OGRSpatialReferenceH hSrs = OSRNewSpatialReference(nullptr);
+
+        // Note: only proj definitions are allowed here
+        if (OSRImportFromProj4(hSrs, aSrs.c_str()) != OGRERR_NONE) throw OdmOrthoPhotoException("Cannot import spatial reference system " + aSrs + ". Is PROJ available?");
+        if (GDALSetSpatialRef(hDstDS, hSrs) != CE_None) throw OdmOrthoPhotoException("Cannot set CRS");
+        OSRDestroySpatialReference(hSrs);
+
+        double geoTransform[6] = {};
+        geoTransform[0] = bounds.xMin + utm_east_offset;
+        geoTransform[1] = (bounds.xMax - bounds.xMin) / static_cast<double>(width);
+        geoTransform[2] = 0.0;
+        geoTransform[3] = bounds.yMax + utm_north_offset;
+        geoTransform[4] = 0.0;
+        geoTransform[5] = (bounds.yMin - bounds.yMax) / static_cast<double>(height);
+
+        if (GDALSetGeoTransform(hDstDS, geoTransform) != CE_None) throw OdmOrthoPhotoException("Cannot set geotransform");
+    }
+   
+    auto hBand = GDALGetRasterBand( hDstDS, 1 );
+    GDALSetRasterColorInterpretation(hBand, GCI_GrayIndex);
+    if (!depth_.isContinuous()) {
+        depth_ = depth_.clone();
+    }
+    void *depthPtr = static_cast<void *>(depth_.data);
+    GDALSetRasterNoDataValue(hBand,  0 - std::numeric_limits<float>::infinity());
+    if (GDALRasterIO( hBand, GF_Write, 0, 0, width, height,
+                depthPtr, width, height, GDT_Float32, 0, 0 ) != CE_None){
+        std::cerr << "Cannot write TIFF to " << filename << std::endl;
         exit(1);
     }
 
@@ -575,6 +646,10 @@ void OdmOrthoPhoto::createOrthoPhoto()
     }else{
         std::cerr << "Unsupported bit depth value: " << textureDepth;
         exit(1);
+    }
+
+    if (!outputDsmFile_.empty()) {
+        saveDepthTIFF(outputDsmFile_);
     }
 
     if (!outputCornerFile_.empty())
